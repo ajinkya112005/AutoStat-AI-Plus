@@ -1,0 +1,8 @@
+streamlit
+pandas
+matplotlib
+seaborn
+scikit-learn
+joblib
+fpdf
+email-validator
