@@ -5,12 +5,17 @@ import matplotlib.pyplot as plt
 import smtplib
 import ssl
 from email.message import EmailMessage
+import joblib
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import LabelEncoder
+import os
+import numpy as np
 
 st.set_page_config(page_title="AutoStat-AI++", layout="wide") 
 st.title("📊 AutoStat-AI++: Survey Data Cleaner & Analyzer")
 
 # Step 1: File Upload
-uploaded_file = st.file_uploader("📄 Upload your CSV file", type=["csv"])
+uploaded_file = st.file_uploader("📤 Upload your CSV file", type=["csv"])
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
@@ -35,7 +40,7 @@ if uploaded_file is not None:
         st.success("✅ Removed missing rows")
 
     # Step 4: Data Types
-    st.subheader("🧫 Data Types")
+    st.subheader("🧬 Data Types")
     st.write(df.dtypes)
 
     # Step 5: Duplicates
@@ -51,7 +56,7 @@ if uploaded_file is not None:
     st.dataframe(df)
 
     # ✅ CSV DOWNLOAD SECTION
-    st.subheader("📅 Download Cleaned Data")
+    st.subheader("📥 Download Cleaned Data")
 
     @st.cache_data
     def convert_df_to_csv(dataframe):
@@ -60,7 +65,7 @@ if uploaded_file is not None:
     csv_data = convert_df_to_csv(df)
 
     st.download_button(
-        label="📅 Download CSV",
+        label="📥 Download CSV",
         data=csv_data,
         file_name='cleaned_survey_data.csv',
         mime='text/csv'
@@ -140,6 +145,52 @@ if uploaded_file is not None:
     ax1.pie(gender_count, labels=gender_count.index, autopct='%1.1f%%', startangle=90)
     ax1.axis('equal')
     st.pyplot(fig1)
+
+    # Step 12: ML Training
+    st.header("🤖 Machine Learning Model Training")
+    all_cols = list(df.columns)
+    input_features = st.multiselect("Select input features", all_cols, default=["Education", "Gender", "Year"])
+    target_col = st.selectbox("Select target column", [col for col in all_cols if col not in input_features])
+
+    if st.button("🚀 Train & Save Model"):
+        df_model = df[input_features + [target_col]].copy()
+        for col in df_model.columns:
+            if df_model[col].dtype == 'object':
+                le = LabelEncoder()
+                df_model[col] = le.fit_transform(df_model[col])
+
+        X = df_model[input_features]
+        y = df_model[target_col]
+        model = LinearRegression()
+        model.fit(X, y)
+        joblib.dump(model, "model.pkl")
+        joblib.dump(input_features, "features.pkl")
+        st.success("✅ Model trained and saved successfully!")
+
+    # Step 13: Prediction
+    if os.path.exists("model.pkl") and os.path.exists("features.pkl"):
+        st.header("🔮 Prediction Module")
+        model = joblib.load("model.pkl")
+        features = joblib.load("features.pkl")
+        input_data = {}
+
+        for col in features:
+            if df[col].dtype == 'object':
+                input_data[col] = st.selectbox(f"{col}", df[col].unique(), key=col)
+            else:
+                input_data[col] = st.number_input(f"{col}", float(df[col].min()), float(df[col].max()), key=col)
+
+        input_df = pd.DataFrame([input_data])
+
+        for col in input_df.columns:
+            if df[col].dtype == 'object':
+                le = LabelEncoder()
+                le.fit(df[col])
+                input_df[col] = le.transform(input_df[col])
+
+        input_df = input_df.reindex(columns=features, fill_value=0)
+        pred = model.predict(input_df)[0]
+        st.success(f"🎯 Predicted {target_col}: {round(pred, 2)}")
 
 else:
     st.info("📂 Please upload a CSV file to begin.")
