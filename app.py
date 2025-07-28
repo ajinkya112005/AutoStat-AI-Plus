@@ -2,76 +2,104 @@ import streamlit as st
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import plotly.express as px
+import altair as alt
 import smtplib
 import ssl
 from email.message import EmailMessage
 import joblib
 from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import LabelEncoder
-import os
 import numpy as np
+import os
+from fpdf import FPDF
+import tempfile
+from ydata_profiling import ProfileReport
+from streamlit_pandas_profiling import st_profile_report
+from langchain.llms import OpenAI
+from langchain.chains import ConversationChain
+from langchain.memory import ConversationBufferMemory
 
-st.set_page_config(page_title="AutoStat-AI++", layout="wide") 
+st.set_page_config(page_title="AutoStat-AI++", layout="wide")
+
 st.title("📊 AutoStat-AI++: Survey Data Cleaner & Analyzer")
 
-# Step 1: File Upload
-uploaded_file = st.file_uploader("📤 Upload your CSV file", type=["csv"])
+admin_view = st.sidebar.checkbox("👮 Admin Dashboard")
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+uploaded_file = st.file_uploader("📄 Upload your CSV/Excel file", type=["csv", "xlsx"])
 
-    # Clean numeric columns
+st.subheader("📤 Or Enter Google Sheets URL")
+gsheet_url = st.text_input("Paste Google Sheets URL (Public/Shared)")
+
+if uploaded_file is not None or gsheet_url:
+    if uploaded_file is not None:
+        if uploaded_file.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+    elif gsheet_url:
+        try:
+            sheet_id = gsheet_url.split("/d/")[1].split("/")[0]
+            gsheet_csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+            df = pd.read_csv(gsheet_csv_url)
+            st.success("✅ Loaded Google Sheet successfully")
+        except Exception as e:
+            st.error(f"❌ Failed to read Google Sheet: {e}")
+            st.stop()
+
     for col in ['Income', 'Year']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-
     df.dropna(subset=['Income', 'Year'], inplace=True)
 
-    # Step 2: Raw Preview
     st.subheader("📁 Raw Data Preview")
-    st.dataframe(df)
+    st.dataframe(df, use_container_width=True)
 
-    # Step 3: Missing Values
-    st.subheader("🚫 Missing Values Check")
-    st.write(df.isnull().sum())
+    st.subheader("📈 Interactive Dashboard - Plotly")
+    numeric_cols = df.select_dtypes(include='number').columns.tolist()
+    categorical_cols = df.select_dtypes(include='object').columns.tolist()
 
-    if st.button("Remove missing values"):
-        df = df.dropna()
-        st.success("✅ Removed missing rows")
+    if numeric_cols and categorical_cols:
+        x_col = st.selectbox("Choose X-axis (Categorical)", categorical_cols)
+        y_col = st.selectbox("Choose Y-axis (Numeric)", numeric_cols)
+        fig = px.bar(df, x=x_col, y=y_col, color=x_col, title=f"Bar Chart of {y_col} by {x_col}")
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Step 4: Data Types
+    st.subheader("📊 Interactive Dashboard - Altair")
+    if numeric_cols and categorical_cols:
+        bar_chart = alt.Chart(df).mark_bar().encode(
+            x=alt.X(f'{x_col}:N', title=x_col),
+            y=alt.Y(f'{y_col}:Q', title=y_col),
+            color=x_col
+        ).properties(width=700, height=400)
+        st.altair_chart(bar_chart, use_container_width=True)
+
+    st.subheader("🧠 Auto Insights - Natural Language Summary")
+    if st.button("🪄 Generate Auto Insights"):
+        try:
+            profile = ProfileReport(df, title="📊 Auto Insights Report", explorative=True)
+            st_profile_report(profile)
+        except Exception as e:
+            st.error(f"❌ Could not generate auto insights: {e}")
+
     st.subheader("🧬 Data Types")
     st.write(df.dtypes)
 
-    # Step 5: Duplicates
-    dup_count = df.duplicated().sum()
-    st.write(f"Found {dup_count} duplicate rows")
+    df.drop_duplicates(inplace=True)
 
-    if st.button("Remove duplicate rows"):
-        df = df.drop_duplicates()
-        st.success("✅ Removed duplicate rows")
-
-    # Step 6: Cleaned Data
     st.subheader("✅ Cleaned Data Preview")
-    st.dataframe(df)
-
-    # ✅ CSV DOWNLOAD SECTION
-    st.subheader("📥 Download Cleaned Data")
+    st.dataframe(df, use_container_width=True)
 
     @st.cache_data
     def convert_df_to_csv(dataframe):
         return dataframe.to_csv(index=False).encode('utf-8')
-
     csv_data = convert_df_to_csv(df)
+    st.download_button("📅 Download CSV", data=csv_data, file_name='cleaned_survey_data.csv', mime='text/csv')
 
-    st.download_button(
-        label="📥 Download CSV",
-        data=csv_data,
-        file_name='cleaned_survey_data.csv',
-        mime='text/csv'
-    )
-
-    # 📧 EMAIL SECTION
     def send_email_with_attachment(receiver, subject, body, attachment_data, filename):
         sender = st.secrets["email"]["sender"]
         password = st.secrets["email"]["password"]
@@ -81,7 +109,6 @@ if uploaded_file is not None:
         msg["From"] = sender
         msg["To"] = receiver
         msg.set_content(body)
-
         msg.add_attachment(attachment_data, maintype="application", subtype="octet-stream", filename=filename)
 
         context = ssl.create_default_context()
@@ -109,88 +136,88 @@ if uploaded_file is not None:
         else:
             st.warning("⚠️ Please enter a valid email address.")
 
-    # Step 7: Summary Stats
-    st.subheader("📊 Estimation and Summary Stats")
-    st.write(df.describe())
-
-    # Step 8: Filters
-    st.sidebar.header("🔍 Filter Options")
-    gender_filter = st.sidebar.selectbox("Select Gender", ["All"] + list(df['Gender'].unique()))
-    area_filter = st.sidebar.selectbox("Select Area", ["All"] + list(df['Area'].unique()))
-
-    filtered_df = df.copy()
-    if gender_filter != "All":
-        filtered_df = filtered_df[filtered_df['Gender'] == gender_filter]
-    if area_filter != "All":
-        filtered_df = filtered_df[filtered_df['Area'] == area_filter]
-
-    st.write(f"**Filtered Data ({len(filtered_df)} records)**")
-    st.dataframe(filtered_df)
-
-    # Step 9: Bar Chart
     st.subheader("📚 Average Income by Education Level")
-    income_by_edu = filtered_df.groupby('Education')['Income'].mean().sort_values(ascending=False)
-    st.bar_chart(income_by_edu)
+    if 'Education' in df.columns and 'Income' in df.columns:
+        income_by_edu = df.groupby('Education')['Income'].mean().sort_values(ascending=False)
+        st.bar_chart(income_by_edu)
 
-    # Step 10: Line Chart
-    if 'Year' in df.columns:
+    if 'Year' in df.columns and 'Income' in df.columns:
         st.subheader("📈 Income Trend by Year")
-        trend_data = filtered_df.groupby('Year')['Income'].mean()
+        trend_data = df.groupby('Year')['Income'].mean()
         st.line_chart(trend_data)
 
-    # Step 11: Pie Chart
-    st.subheader("🎯 Gender Distribution")
-    gender_count = filtered_df['Gender'].value_counts()
-    fig1, ax1 = plt.subplots()
-    ax1.pie(gender_count, labels=gender_count.index, autopct='%1.1f%%', startangle=90)
-    ax1.axis('equal')
-    st.pyplot(fig1)
+    if 'Gender' in df.columns:
+        st.subheader("🎯 Gender Distribution")
+        gender_count = df['Gender'].value_counts()
+        fig1, ax1 = plt.subplots()
+        ax1.pie(gender_count, labels=gender_count.index, autopct='%1.1f%%', startangle=90)
+        ax1.axis('equal')
+        st.pyplot(fig1)
 
-    # Step 12: ML Training
-    st.header("🤖 Machine Learning Model Training")
+    st.subheader("🧪 Compare ML Models")
+    models = {
+        "Linear Regression": LinearRegression(),
+        "Decision Tree": DecisionTreeRegressor(),
+        "Random Forest": RandomForestRegressor(n_estimators=100),
+        "KNN": KNeighborsRegressor()
+    }
+
     all_cols = list(df.columns)
-    input_features = st.multiselect("Select input features", all_cols, default=["Education", "Gender", "Year"])
-    target_col = st.selectbox("Select target column", [col for col in all_cols if col not in input_features])
+    input_features = st.multiselect("Select Input Features", options=all_cols, default=["Education", "Gender", "Year"])
+    target_col = st.selectbox("Select Target Column", options=[col for col in all_cols if col not in input_features], index=0)
 
-    if st.button("🚀 Train & Save Model"):
+    best_model = None
+    lowest_rmse = float("inf")
+
+    results = []
+    if st.button("🏁 Compare and Select Best Model"):
         df_model = df[input_features + [target_col]].copy()
         for col in df_model.columns:
             if df_model[col].dtype == 'object':
                 le = LabelEncoder()
                 df_model[col] = le.fit_transform(df_model[col])
-
         X = df_model[input_features]
         y = df_model[target_col]
-        model = LinearRegression()
-        model.fit(X, y)
-        joblib.dump(model, "model.pkl")
+
+        model_predictions = []
+        for name, model in models.items():
+            model.fit(X, y)
+            preds = model.predict(X)
+            rmse = np.sqrt(mean_squared_error(y, preds))
+            results.append((name, rmse))
+            model_predictions.append(preds)
+            if rmse < lowest_rmse:
+                lowest_rmse = rmse
+                best_model = model
+                best_model_name = name
+
+        # Ensemble Model using Stacking
+        meta_X = pd.DataFrame({name: preds for (name, _), preds in zip(results, model_predictions)})
+        meta_model = LinearRegression()
+        meta_model.fit(meta_X, y)
+        meta_preds = meta_model.predict(meta_X)
+        meta_rmse = np.sqrt(mean_squared_error(y, meta_preds))
+        results.append(("Supermodel (Ensemble)", meta_rmse))
+
+        st.write(pd.DataFrame(results, columns=["Model", "RMSE"]))
+
+        joblib.dump(meta_model, "meta_model.pkl")
+        joblib.dump(models, "base_models.pkl")
         joblib.dump(input_features, "features.pkl")
-        st.success("✅ Model trained and saved successfully!")
+        joblib.dump(target_col, "target.pkl")
+        st.success(f"✅ Best model is {best_model_name} with RMSE: {lowest_rmse:.2f} | Ensemble RMSE: {meta_rmse:.2f}")
 
-    # Step 13: Prediction
-    if os.path.exists("model.pkl") and os.path.exists("features.pkl"):
-        st.header("🔮 Prediction Module")
-        model = joblib.load("model.pkl")
-        features = joblib.load("features.pkl")
-        input_data = {}
+    # 🤖 AI Chatbot Assistant
+st.subheader("🤖 Ask the AI Assistant")
+openai_api_key = st.secrets["openai_api_key"] if "openai_api_key" in st.secrets else ""
+if openai_api_key:
+    llm = OpenAI(temperature=0.7, openai_api_key=openai_api_key)
+    memory = ConversationBufferMemory()
+    conversation = ConversationChain(llm=llm, memory=memory)
 
-        for col in features:
-            if df[col].dtype == 'object':
-                input_data[col] = st.selectbox(f"{col}", df[col].unique(), key=col)
-            else:
-                input_data[col] = st.number_input(f"{col}", float(df[col].min()), float(df[col].max()), key=col)
-
-        input_df = pd.DataFrame([input_data])
-
-        for col in input_df.columns:
-            if df[col].dtype == 'object':
-                le = LabelEncoder()
-                le.fit(df[col])
-                input_df[col] = le.transform(input_df[col])
-
-        input_df = input_df.reindex(columns=features, fill_value=0)
-        pred = model.predict(input_df)[0]
-        st.success(f"🎯 Predicted {target_col}: {round(pred, 2)}")
-
+    user_input = st.text_input("Ask something about your data, forecast, or models:")
+    if user_input:
+        response = conversation.run(user_input)
+        st.success(response)
 else:
-    st.info("📂 Please upload a CSV file to begin.")
+    st.info("⚠️ Set your OpenAI API key in Streamlit secrets to use the chatbot.")
